@@ -115,15 +115,15 @@ if args.dataset != 'wechat':
     user_map_file.insert(0, 'org_id remap_id')
     item_map_file = [f'{org_id} {remap_id}' for remap_id, org_id in enumerate(i2item)]
     item_map_file.insert(0, 'org_id remap_id')
-    with open(args.datadir + args.dataset + '_raw_user_map.txt', 'w') as f:
+    with open(args.datadir + 'process/' + args.dataset + '_raw_user_map.txt', 'w') as f:
         f.write('\n'.join(user_map_file))
-    with open(args.datadir + args.dataset + '_raw_item_map.txt', 'w') as f:
+    with open(args.datadir + 'process/' + args.dataset + '_raw_item_map.txt', 'w') as f:
         f.write('\n'.join(item_map_file))
 
 
 """按每个 user 相关的 records 分割数据集，保证 val / test set 中的 user 一定出现在 train set 中"""
 user_df = df.groupby(by='user')
-idxes = [_[1].index for _ in user_df]  # (user_id, records) for every group(user). so the _[1].index
+idxes = [g[1].index for g in user_df]  # (user_id, records) for every group(user). so the _[1].index
 sp_idxes = list(map(split, idxes))  # [[tr_id, va_id, ts_id] for every group]
 
 tr_idx = np.hstack([_[0] for _ in sp_idxes])  # all train records' index
