@@ -4,13 +4,15 @@ import numpy as np
 import pandas as pd
 from pprint import pprint
 from scipy import sparse
+import os
+import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', type=str, default="XING", help='Dataset to use.')
 parser.add_argument('--data_dir', type=str, default="./data/", help='Director of the dataset.')
 parser.add_argument('--warm_ratio', type=float, default=0.8, help='Warm ratio of all items')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
-parser.add_argument('--warm_split', nargs='?', default='[0.65, 0.15, 0.2]')
+parser.add_argument('--warm_split', nargs='?', default='[0.65, 0.15, 0.1, 0.1]')
 parser.add_argument('--cold_split', nargs='?', default='[0.5, 0.5]')
 args = parser.parse_args()
 args.warm_split = eval(args.warm_split)
@@ -21,7 +23,12 @@ pprint(vars(args))
 random.seed(args.seed)
 np.random.seed(args.seed)
 
+store_path = args.data_dir + 'process/' + f'{args.dataset}/'
+if not os.path.exists(store_path):
+    os.makedirs(store_path)
 
+
+t0 = time.time()
 """读取数据"""
 df = pd.read_csv(args.data_dir + args.dataset + '.csv')
 origin_len = df.shape[0]
@@ -50,19 +57,17 @@ df.iloc[:, 1] = np.array(list(map(item2i.get, df.iloc[:, 1])))
 
 # 调整为 map 后的 content 顺序
 item_content = item_content[i2item]
-sparse.save_npz(args.data_dir + 'process/' + args.dataset + f'_item_content.npz', item_content.tocsr())
+sparse.save_npz(store_path + 'item_content.npz', item_content.tocsr())
 user_content = user_content[i2user]
-sparse.save_npz(args.data_dir + 'process/' + args.dataset + f'_user_content.npz', user_content.tocsr())
+sparse.save_npz(store_path + 'user_content.npz', user_content.tocsr())
 
 user_map_file = [[org_id, remap_id] for remap_id, org_id in enumerate(i2user)]
 user_map_file = np.vstack(user_map_file).astype(np.int32)
 item_map_file = [[org_id, remap_id] for remap_id, org_id in enumerate(i2item)]
 item_map_file = np.vstack(item_map_file).astype(np.int32)
 
-pd.DataFrame(user_map_file).to_csv(args.data_dir + 'process/' + args.dataset + '_raw_user_map.csv',
-                                   header=['org_id', 'remap_id'], index=False)
-pd.DataFrame(item_map_file).to_csv(args.data_dir + 'process/' + args.dataset + '_raw_item_map.csv',
-                                   header=['org_id', 'remap_id'], index=False)
+pd.DataFrame(user_map_file).to_csv(store_path + 'raw_user_map.csv', header=['org_id', 'remap_id'], index=False)
+pd.DataFrame(item_map_file).to_csv(store_path + 'raw_item_map.csv', header=['org_id', 'remap_id'], index=False)
 
 
 """warm/cold splitting"""
@@ -95,64 +100,83 @@ warm_user_records = np.hstack(warm_user_group)
 cold_user_group = user_group[n_warm_user_group:]
 cold_user_records = np.hstack(cold_user_group)
 
-# 分出 warm_item_warm_user_records, 即 warm_item_records 和 warm_user_records 的并集
-warm_item_warm_user_records = np.intersect1d(warm_item_records, warm_user_records)
-warm_item_idx = np.unique(df.iloc[warm_item_warm_user_records]['item'])  # 此处有玄机：过滤后再...因为 warm object 必须经过训练
-warm_user_idx = np.unique(df.iloc[warm_item_warm_user_records]['user'])
+# 分出 warm_both_records, 即 warm_item_records 和 warm_user_records 的并集
+warm_both_records = np.intersect1d(warm_item_records, warm_user_records)
+warm_item_idx = np.unique(df.iloc[warm_both_records]['item'])  # 此处有玄机：过滤后再...因为 warm object 必须经过训练
+warm_user_idx = np.unique(df.iloc[warm_both_records]['user'])
 
-# 分出 cold_item_cold_user_records, 即 cold_item_records 和 cold_user_records 的并集
-cold_item_cold_user_records = np.intersect1d(cold_item_records, cold_user_records)
+# 分出 cold_both_records, 即 cold_item_records 和 cold_user_records 的并集
+cold_both_records = np.intersect1d(cold_item_records, cold_user_records)
 
 
-"""train/val/test splitting"""
-# warm
-n_warm_val = int(args.warm_split[1] * len(warm_item_warm_user_records))
-n_warm_test = int(args.warm_split[2] * len(warm_item_warm_user_records))
-n_warm_train = len(warm_item_warm_user_records) - n_warm_val - n_warm_test
+"""subset splitting"""
+# warm -> emb/map/val/test
+n_warm_map = int(args.warm_split[1] * len(warm_both_records))
+n_warm_val = int(args.warm_split[2] * len(warm_both_records))
+n_warm_test = int(args.warm_split[3] * len(warm_both_records))
+n_warm_emb = len(warm_both_records) - n_warm_map - n_warm_val - n_warm_test
 
-np.random.shuffle(warm_item_warm_user_records)
-warm_train_records = warm_item_warm_user_records[:n_warm_train]
-warm_val_records = warm_item_warm_user_records[n_warm_train:(n_warm_train+n_warm_val)]
-warm_test_records = warm_item_warm_user_records[(n_warm_train+n_warm_val):]
+np.random.shuffle(warm_both_records)
+warm_emb_records = warm_both_records[:n_warm_emb]
+warm_map_records = warm_both_records[n_warm_emb:(n_warm_emb+n_warm_map)]
+warm_val_records = warm_both_records[(n_warm_emb+n_warm_map):(n_warm_emb+n_warm_map+n_warm_val)]
+warm_test_records = warm_both_records[(n_warm_emb+n_warm_map+n_warm_val):]
 
-# Move the val records whose user/item don't emerge in train set into train set. It hurts validation set more.
-warm_train_user_set = np.unique(df.iloc[warm_train_records]['user'])
+# Move the map records whose user/item don't emerge in emb set into emb set. It hurts map more.
+warm_emb_user_set = np.unique(df.iloc[warm_emb_records]['user'])
+df_warm_map = df.iloc[warm_map_records]
+idx_to_move = df_warm_map[True ^ df_warm_map['user'].isin(warm_emb_user_set)].index
+warm_map_records = np.setdiff1d(warm_map_records, idx_to_move)
+warm_emb_records = np.hstack([warm_emb_records, idx_to_move])
+
+warm_emb_item_set = np.unique(df.iloc[warm_emb_records]['item'])
+df_warm_map = df.iloc[warm_map_records]
+idx_to_move = df_warm_map[True ^ df_warm_map['item'].isin(warm_emb_item_set)].index
+warm_map_records = np.setdiff1d(warm_map_records, idx_to_move)
+warm_emb_records = np.hstack([warm_emb_records, idx_to_move])
+
+# Move the val records whose user/item don't emerge in emb set into emb set.
+warm_emb_user_set = np.unique(df.iloc[warm_emb_records]['user'])
 df_warm_val = df.iloc[warm_val_records]
-idx_to_move = df_warm_val[True ^ df_warm_val['user'].isin(warm_train_user_set)].index
+idx_to_move = df_warm_val[True ^ df_warm_val['user'].isin(warm_emb_user_set)].index
 warm_val_records = np.setdiff1d(warm_val_records, idx_to_move)
-warm_train_records = np.hstack([warm_train_records, idx_to_move])
+warm_emb_records = np.hstack([warm_emb_records, idx_to_move])
 
-warm_train_item_set = np.unique(df.iloc[warm_train_records]['item'])
+warm_emb_item_set = np.unique(df.iloc[warm_emb_records]['item'])
 df_warm_val = df.iloc[warm_val_records]
-idx_to_move = df_warm_val[True ^ df_warm_val['item'].isin(warm_train_item_set)].index
+idx_to_move = df_warm_val[True ^ df_warm_val['item'].isin(warm_emb_item_set)].index
 warm_val_records = np.setdiff1d(warm_val_records, idx_to_move)
-warm_train_records = np.hstack([warm_train_records, idx_to_move])
+warm_emb_records = np.hstack([warm_emb_records, idx_to_move])
 
-# Move the test records whose user/item don't emerge in train set into train set.
-warm_train_user_set = np.unique(df.iloc[warm_train_records]['user'])
+# Move the test records whose user/item don't emerge in emb set into emb set.
+warm_emb_user_set = np.unique(df.iloc[warm_emb_records]['user'])
 df_warm_test = df.iloc[warm_test_records]
-idx_to_move = df_warm_test[True ^ df_warm_test['user'].isin(warm_train_user_set)].index
+idx_to_move = df_warm_test[True ^ df_warm_test['user'].isin(warm_emb_user_set)].index
 warm_test_records = np.setdiff1d(warm_test_records, idx_to_move)
-warm_train_records = np.hstack([warm_train_records, idx_to_move])
+warm_emb_records = np.hstack([warm_emb_records, idx_to_move])
 
-warm_train_item_set = np.unique(df.iloc[warm_train_records]['item'])
+warm_emb_item_set = np.unique(df.iloc[warm_emb_records]['item'])
 df_warm_test = df.iloc[warm_test_records]
-idx_to_move = df_warm_test[True ^ df_warm_test['item'].isin(warm_train_item_set)].index
+idx_to_move = df_warm_test[True ^ df_warm_test['item'].isin(warm_emb_item_set)].index
 warm_test_records = np.setdiff1d(warm_test_records, idx_to_move)
-warm_train_records = np.hstack([warm_train_records, idx_to_move])
+warm_emb_records = np.hstack([warm_emb_records, idx_to_move])
 
 # store df
-df_warm_train_records = df.iloc[warm_train_records, :]
-df_warm_val_records = df.iloc[warm_val_records, :]
-df_warm_test_records = df.iloc[warm_test_records, :]
+df_warm_emb_records = df.iloc[warm_emb_records]
+df_warm_map_records = df.iloc[warm_map_records]
+df_warm_val_records = df.iloc[warm_val_records]
+df_warm_test_records = df.iloc[warm_test_records]
 
-df_warm_train_records.to_csv(args.data_dir + 'process/' + args.dataset + '_warm_train.csv', index=False)
-df_warm_val_records.to_csv(args.data_dir + 'process/' + args.dataset + '_warm_val.csv', index=False)
-df_warm_test_records.to_csv(args.data_dir + 'process/' + args.dataset + '_warm_test.csv', index=False)
+df_warm_emb_records.to_csv(store_path + 'warm_emb.csv', index=False)
+df_warm_map_records.to_csv(store_path + 'warm_map.csv', index=False)
+df_warm_val_records.to_csv(store_path + 'warm_val.csv', index=False)
+df_warm_test_records.to_csv(store_path + 'warm_test.csv', index=False)
 
 print('[warm]\tuser\titem\trecord')
-print('train\t%d\t%d\t%d' %
-      (len(np.unique(df_warm_train_records['user'])), len(np.unique(df_warm_train_records['item'])), len(warm_train_records)))
+print('emb\t%d\t%d\t%d' %
+      (len(np.unique(df_warm_emb_records['user'])), len(np.unique(df_warm_emb_records['item'])), len(warm_emb_records)))
+print('map\t%d\t%d\t%d' %
+      (len(np.unique(df_warm_map_records['user'])), len(np.unique(df_warm_map_records['item'])), len(warm_map_records)))
 print('val\t%d\t%d\t%d' %
       (len(np.unique(df_warm_val_records['user'])), len(np.unique(df_warm_val_records['item'])), len(warm_val_records)))
 print('test\t%d\t%d\t%d' %
@@ -186,8 +210,8 @@ cold_item_test_records = np.array(cold_item_test_records, dtype=np.int32)
 
 df_cold_item_val_records = df.iloc[cold_item_val_records]
 df_cold_item_test_records = df.iloc[cold_item_test_records]
-df_cold_item_val_records.to_csv(args.data_dir + 'process/' + args.dataset + '_cold_item_val.csv', index=False)
-df_cold_item_test_records.to_csv(args.data_dir + 'process/' + args.dataset + '_cold_item_test.csv', index=False)
+df_cold_item_val_records.to_csv(store_path + 'cold_item_val.csv', index=False)
+df_cold_item_test_records.to_csv(store_path + 'cold_item_test.csv', index=False)
 
 print('[cold]\n[item]\tuser\titem\trecord')
 print('val\t%d\t%d\t%d' % (len(np.unique(df_cold_item_val_records['user'])),
@@ -225,8 +249,8 @@ cold_user_test_records = np.array(cold_user_test_records, dtype=np.int32)
 
 df_cold_user_val_records = df.iloc[cold_user_val_records, :]
 df_cold_user_test_records = df.iloc[cold_user_test_records, :]
-df_cold_user_val_records.to_csv(args.data_dir + 'process/' + args.dataset + '_cold_user_val.csv', index=False)
-df_cold_user_test_records.to_csv(args.data_dir + 'process/' + args.dataset + '_cold_user_test.csv', index=False)
+df_cold_user_val_records.to_csv(store_path + 'cold_user_val.csv', index=False)
+df_cold_user_test_records.to_csv(store_path + 'cold_user_test.csv', index=False)
 
 print('[user]\tuser\titem\trecord')
 print('val\t%d\t%d\t%d' % (len(np.unique(df_cold_user_val_records['user'])),
@@ -238,8 +262,8 @@ print('test\t%d\t%d\t%d' % (len(np.unique(df_cold_user_test_records['user'])),
 print('=' * 30)
 
 # cold item cold user
-np.random.shuffle(cold_item_cold_user_records)
-df_cold_both = df.iloc[cold_item_cold_user_records]
+np.random.shuffle(cold_both_records)
+df_cold_both = df.iloc[cold_both_records]
 
 cold_both_item_val_records = df_cold_both[False ^ df_cold_both['item'].isin(cold_item_val)].index  # cold item val idx in cold both
 cold_both_user_val_records = df_cold_both[False ^ df_cold_both['user'].isin(cold_user_val)].index  # cold user val idx in cold both
@@ -251,8 +275,8 @@ cold_both_test_records = np.intersect1d(cold_both_item_test_records, cold_both_u
 
 df_cold_both_val_records = df.iloc[cold_both_val_records]
 df_cold_both_test_records = df.iloc[cold_both_test_records]
-df_cold_both_val_records.to_csv(args.data_dir + 'process/' + args.dataset + '_cold_both_val.csv', index=False)
-df_cold_both_test_records.to_csv(args.data_dir + 'process/' + args.dataset + '_cold_both_test.csv', index=False)
+df_cold_both_val_records.to_csv(store_path + 'cold_both_val.csv', index=False)
+df_cold_both_test_records.to_csv(store_path + 'cold_both_test.csv', index=False)
 
 print('[both]\tuser\titem\trecord')
 print('val\t%d\t%d\t%d' % (len(np.unique(df_cold_both_val_records['user'])),
@@ -261,4 +285,6 @@ print('val\t%d\t%d\t%d' % (len(np.unique(df_cold_both_val_records['user'])),
 print('test\t%d\t%d\t%d' % (len(np.unique(df_cold_both_test_records['user'])),
                             len(np.unique(df_cold_both_test_records['item'])),
                             len(cold_both_test_records)))
+print('Process %s in %.2f s' % (args.dataset, time.time() - t0))
+print('=' * 30)
 
