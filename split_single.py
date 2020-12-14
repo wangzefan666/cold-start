@@ -1,3 +1,4 @@
+import pickle
 import random
 import argparse
 import numpy as np
@@ -8,13 +9,13 @@ import os
 import time
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', type=str, default="CiteULike", help='Dataset to use.')
+parser.add_argument('--dataset', type=str, default="LastFM", help='Dataset to use.')
 parser.add_argument('--data_dir', type=str, default="./data/", help='Director of the dataset.')
 parser.add_argument('--warm_ratio', type=float, default=0.8, help='Warm ratio of all items')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
 parser.add_argument('--warm_split', nargs='?', default='[0.65, 0.15, 0.1, 0.1]')
 parser.add_argument('--cold_split', nargs='?', default='[0.5, 0.5]')
-parser.add_argument('--cold_object', type=str, default='item')
+parser.add_argument('--cold_object', type=str, default='user')
 args = parser.parse_args()
 args.warm_split = eval(args.warm_split)
 args.cold_split = eval(args.cold_split)
@@ -27,8 +28,8 @@ np.random.seed(args.seed)
 store_path = args.data_dir + 'process/' + f'{args.dataset}/'
 if not os.path.exists(store_path):
     os.makedirs(store_path)
-
 t0 = time.time()
+
 """读取数据"""
 df = pd.read_csv(args.data_dir + args.dataset + '.csv')
 origin_len = df.shape[0]
@@ -38,6 +39,8 @@ print('Duplicated :%d -> %d' % (origin_len, new_len))
 
 USER_NUM = len(set(df['user']))
 ITEM_NUM = len(set(df['item']))
+info_dict = {'user_num': USER_NUM, 'item_num': ITEM_NUM}
+pickle.dump(info_dict, open(store_path + 'info.pkl', 'wb'))
 print('User: %d\tItem: %d' % (USER_NUM, ITEM_NUM))
 
 content = sparse.load_npz(args.data_dir + args.dataset + f'_{args.cold_object}_content.npz')
@@ -70,6 +73,7 @@ pd.DataFrame(item_map_file).to_csv(store_path + 'raw_item_map.csv', header=['org
 group = df.groupby(by=args.cold_object)
 # (object_id, record_ids) for every group(user).  _[1].index is [record_ids]
 group = np.array([g[1].index for g in group], dtype=object)
+np.random.shuffle(group)
 
 n_warm_group = int(args.warm_ratio * len(group))
 n_cold_group = len(group) - n_warm_group
@@ -184,5 +188,6 @@ print('val\t%d\t%d\t%d' %
 print('test\t%d\t%d\t%d' %
       (len(np.unique(df_cold_test['user'])), len(np.unique(df_cold_test['item'])), len(cold_test_idx)))
 print('=' * 30)
+
 print('Process %s in %.2f s' % (args.dataset, time.time() - t0))
 

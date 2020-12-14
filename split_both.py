@@ -1,3 +1,4 @@
+import pickle
 import random
 import argparse
 import numpy as np
@@ -38,6 +39,8 @@ print('Duplicated :%d -> %d' % (origin_len, new_len))
 
 USER_NUM = len(set(df['user']))
 ITEM_NUM = len(set(df['item']))
+info_dict = {'user_num': USER_NUM, 'item_num': ITEM_NUM}
+pickle.dump(info_dict, open(store_path + 'info.pkl', 'wb'))
 print('User: %d\tItem: %d' % (USER_NUM, ITEM_NUM))
 
 item_content = sparse.load_npz(args.data_dir + args.dataset + f'_item_content.npz')
@@ -73,10 +76,12 @@ pd.DataFrame(item_map_file).to_csv(store_path + 'raw_item_map.csv', header=['org
 """warm/cold splitting"""
 item_group = df.groupby(by='item')
 item_group = np.array([g[1].index for g in item_group], dtype=object)
+np.random.shuffle(item_group)
 print(f'Max sparse rate (of a item): %.4f' % (max([len(g) for g in item_group]) / USER_NUM))
 
 user_group = df.groupby(by='user')
 user_group = np.array([g[1].index for g in user_group], dtype=object)
+np.random.shuffle(user_group)
 print(f'Max sparse rate (of a user): %.4f' % (max([len(g) for g in user_group]) / ITEM_NUM))
 print('=' * 30)
 
@@ -285,6 +290,6 @@ print('val\t%d\t%d\t%d' % (len(np.unique(df_cold_both_val_records['user'])),
 print('test\t%d\t%d\t%d' % (len(np.unique(df_cold_both_test_records['user'])),
                             len(np.unique(df_cold_both_test_records['item'])),
                             len(cold_both_test_records)))
-print('Process %s in %.2f s' % (args.dataset, time.time() - t0))
 print('=' * 30)
+print('Process %s in %.2f s' % (args.dataset, time.time() - t0))
 
