@@ -6,6 +6,8 @@ import numpy as np
 from itertools import chain
 from gensim.models.word2vec import Word2Vec
 from utils import set_seed
+import pandas as pd
+import utils
 
 RAW_ADJ, MAX_DEGREE = 0, 0
 
@@ -16,20 +18,17 @@ parser.add_argument('--walk_num', type=int, default=100, help='Walk number for e
 parser.add_argument('--walk_length', type=int, default=80, help='The length of each walk.')
 parser.add_argument('--max_degree', type=int, default=768, help='Max degree number.')
 parser.add_argument('--emb_size', type=int, default=200, help='Dimension of the word embedding.')
-parser.add_argument('--n_jobs', type=int, default=8, help='Multiprocessing number.')
 args, _ = parser.parse_known_args()
 
 seed = 0
 set_seed(seed)
 
-map_dict = pickle.load(open(args.datadir + args.dataset + '/warm_dict.pkl', 'rb'))
-adj = map_dict['adj_train']
-user_num = map_dict['user_num']
-item_num = map_dict['item_num']
-total_num = user_num + item_num
-
 
 def compute_adj_element(l):
+    """
+    input:
+        l - batch (start, end)
+    """
     adj_map = -1 + np.zeros((l[1] - l[0], MAX_DEGREE + 1), dtype=np.int)
     sub_adj = RAW_ADJ[l[0]: l[1]]
     for v in range(l[0], l[1]):
@@ -75,6 +74,12 @@ def _walker(start):
     return sent_list
 
 
+map_dict = pickle.load(open(args.datadir + args.dataset + '/warm_dict.pkl', 'rb'))
+train_data = pd.read_csv(args.datadir + args.dataset + '/warm_emb.csv').iloc[:, :2].values
+user_num = map_dict['user_num']
+item_num = map_dict['item_num']
+total_num = user_num + item_num
+adj = utils.comput_bi_adj(train_data, user_num, item_num)
 ADJ_TAB = compute_adjlist_parallel(adj, max_degree=args.max_degree)
 
 # Random walk

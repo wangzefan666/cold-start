@@ -8,11 +8,12 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from pprint import pprint
-import torch.backends.cudnn as cudnn
 from utils import set_seed
+import utils
+import pandas as pd
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', type=str, default="XING", help='Dataset to use.')
+parser.add_argument('--dataset', type=str, default="LastFM", help='Dataset to use.')
 parser.add_argument('--datadir', type=str, default="../data/process/", help='Director of the dataset.')
 parser.add_argument("--lr", type=float, default=0.01, help="learning rate")
 parser.add_argument("--lamda", type=float, default=0.001, help="model regularization rate")
@@ -28,48 +29,32 @@ args, _ = parser.parse_known_args()
 args.Ks = eval(args.Ks)
 pprint(vars(args))
 
-seed = 0
+seed = 42
 set_seed(seed)
-cudnn.benchmark = True
 ndcg.init(args)
 device = torch.device('cuda:0')
 
 para_dict = pickle.load(open(args.datadir + args.dataset + '/warm_dict.pkl', 'rb'))
-TR_ITEMS = para_dict['emb_nb']
-USER_NUM = para_dict['user_num']
-ITEM_NUM = para_dict['item_num']
-VAL_LBS = para_dict['val_sampling']
+tr_items = para_dict['emb_nb']
+user_num = para_dict['user_num']
+item_num = para_dict['item_num']
+train_data = pd.read_csv(args.datadir + args.dataset + '/warm_emb.csv')
+train_array = np.unique(train_data['item'])
 
-USER_ARRAY = np.array(list(range(para_dict['user_num'])))
-ITEM_ARRAY = np.array(list(range(para_dict['item_num'])))
-
-
-def _samp_bpr_pair(uid):
-    ret_array = np.zeros((args.neg_num, 3)).astype(np.int)
-    pos_train = TR_ITEMS.get(uid, [])
-    if len(pos_train) == 0:
-        return np.zeros((0, 3)).astype(np.int)
-    samp_pos = np.random.choice(pos_train, args.neg_num).astype(np.int)
-    neg_items = np.random.choice(ITEM_ARRAY, 2 * args.neg_num)
-    neg_items = neg_items[[item not in pos_train for item in neg_items]]
-
-    while len(neg_items) < args.neg_num:
-        new_neg = np.random.choice(ITEM_ARRAY, 5 * args.neg_num)
-        new_neg = new_neg[[item not in pos_train for item in new_neg]]
-        neg_items = np.hstack([new_neg, neg_items])
-
-    samp_neg = neg_items[:args.neg_num].astype(np.int)
-    ret_array[:, 0] = uid
-    ret_array[:, 1] = samp_pos
-    ret_array[:, 2] = samp_neg
-    return ret_array
+pos_items = para_dict['pos_nb']
+val_items = para_dict['val_nb']
+val_data = pd.read_csv(args.datadir + args.dataset + '/warm_val.csv')
+val_array = np.unique(val_data['item'])
+VAL_LBS = utils.label_neg_samp(list(val_items.keys()),
+                               support_dict=val_items, complement_dict=pos_items,
+                               item_array=val_array, neg_rate=args.neg_num)
 
 
 def bpr_generate(num=None):
     if not num:
         num = args.batch_size
-    samp_user = np.random.choice(USER_ARRAY, num)
-    bpr_lbs = np.vstack(list(map(_samp_bpr_pair, samp_user)))
+    bpr_lbs = utils.bpr_neg_samp(list(tr_items.keys()), n_users=num * args.neg_num,
+                                 support_dict=tr_items, item_array=train_array)
     return torch.LongTensor(bpr_lbs)
 
 
@@ -121,7 +106,7 @@ def _predict(net, lbs, batch_size=10240):
 
 
 # CREATE MODEL
-model = BPR(USER_NUM, ITEM_NUM, args.factor_num)
+model = BPR(user_num, item_num, args.factor_num)
 model = model.to(device)
 optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.lamda)
 
@@ -134,7 +119,7 @@ for epoch in range(args.epochs):
     model.train()
     start_time = time.time()
     loss0, loss1 = 0., 0.
-    for i in range(int(len(USER_ARRAY) / args.batch_size) + 1):
+    for i in range(int(user_num / args.batch_size) + 1):
         model.zero_grad()
         batch_lbs = bpr_generate().to(device)
 
@@ -175,9 +160,9 @@ print('AUC, HR, NDCG: %.4f, %.4f, %.4f' % (best_res['auc'], best_res['hr'][0], b
 
 # store embedding
 model.eval()
-embedding = np.zeros((USER_NUM + ITEM_NUM, args.factor_num))
-embedding[:USER_NUM, :] = model.embed_user.weight.cpu().data.numpy()
-embedding[USER_NUM:, :] = model.embed_item.weight.cpu().data.numpy()
+embedding = np.zeros((user_num + item_num, args.factor_num))
+embedding[:user_num, :] = model.embed_user.weight.cpu().data.numpy()
+embedding[user_num:, :] = model.embed_item.weight.cpu().data.numpy()
 np.save(args.datadir + args.dataset + '/bprmf.npy', embedding)
 print('embeddings of bprmf is stored in ' + args.datadir + args.dataset + '/bprmf.npy')
 
