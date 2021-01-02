@@ -1,20 +1,23 @@
 import time
 import datetime
 import numpy as np
-import scipy
 import tensorflow as tf
-from sklearn import preprocessing as prep
 import random
-import scipy.sparse as sp
-from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import roc_auc_score
+import os
 
 
+# =========== set seed ==============
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
     tf.set_random_seed(seed)
 
+set_seed(42)
 
+
+# =========== utils ===================
 class timer(object):
     def __init__(self, name='default'):
         """
@@ -36,7 +39,7 @@ class timer(object):
     def toc(self, message):
         elapsed = time.time() - self._start_time
         message = '' if message is None else message
-        print('[{0:s}] {1:s} elapsed [{2:s}]'.format(self._name, message, timer._format(elapsed)))
+        print('[{0:s}] {1:s} [{2:s}]'.format(self._name, message, timer._format(elapsed)))
         return self
 
     def reset(self):
@@ -75,78 +78,77 @@ def batch(iterable, _n=1, drop=True):
             yield iterable[ndx:it_len]
 
 
-def tfidf(R):
-    row = R.shape[0]
-    col = R.shape[1]
-    Rbin = R.copy()
-    Rbin[Rbin != 0] = 1.0
-    R = R + Rbin
-    tf = R.copy()
-    tf.data = np.log(tf.data)
-    idf = np.sum(Rbin, 0)
-    idf = np.log(row / (1 + idf))
-    idf = scipy.sparse.spdiags(idf, 0, col, col)
-    return tf * idf
+# ==============================================
+# =============== metric =======================
+# ==============================================
+def sigmoid(array):
+    return 1 / (1 + np.exp(-array))
 
 
-def standardize(x):
+def batch_eval(_sess, tf_eval, eval_feed_dict, eval_data,
+               U_pref, V_pref, excluded_dict,
+               U_content=None, V_content=None,
+               metric=None, warm=False, val=False):
     """
-    takes sparse input and compute standardized version
-
-    Note:
-        cap at 5 std
-
-    :param x: 2D scipy sparse data array to standardize (column-wise), must support row indexing
-    :return: the object to perform scale (stores mean/std) for inference, as well as the scaled x
+    given EvalData and DropoutNet compute graph in TensorFlow, runs batch evaluation
+    param:
+        _sess: tf session
+        tf_eval: the evaluate output symbol in tf
+        eval_feed_dict: method to parse tf, pick from EvalData method
+        eval_data: EvalData instance
     """
-    x_nzrow = x.any(axis=1)
-    scaler = prep.StandardScaler().fit(x[x_nzrow, :])
-    x_scaled = np.copy(x)
-    x_scaled[x_nzrow, :] = scaler.transform(x_scaled[x_nzrow, :])
-    x_scaled[x_scaled > 5] = 5
-    x_scaled[x_scaled < -5] = -5
-    x_scaled[np.absolute(x_scaled) < 1e-5] = 0
-    return scaler, x_scaled
 
+    # 在测试集上得到预测结果 user-item
+    tf.local_variables_initializer().run()
+    V_content = V_content.todense() if V_content is not None else None
+    eval_preds, arg_eval_preds = [], []
+    for (start, end) in eval_data.eval_batch:
+        batch_user = eval_data.test_users[start:end]
+        batch_u_pref = U_pref[batch_user]
+        batch_u_cont = U_content[batch_user].todense() if U_content is not None else None
+        # scores
+        eval_preds_batch = _sess.run(tf_eval, feed_dict=eval_feed_dict(batch_u_pref, V_pref, eval_data,
+                                                                       batch_u_cont, V_content, warm))
+        eval_preds.append(eval_preds_batch)
 
-def standardize_2(x):
-    """
-    takes sparse input and compute standardized version
+    eval_preds = np.concatenate(eval_preds)
 
-    Note:
-        cap at 1 std
+    # mask pos in train
+    exclude_index = []
+    exclude_items = []
+    for uid in eval_data.test_users:
+        iid_array = excluded_dict[uid]
+        uid = eval_data.test_user_ids_map[uid]
+        iid_array = np.setdiff1d(iid_array, np.array(eval_data.R_test_inf.rows[uid], dtype=np.int))
+        exclude_index.extend([uid] * len(iid_array))
+        exclude_items.extend(iid_array)
 
-    :param x: 2D scipy sparse data array to standardize (column-wise), must support row indexing
-    :return: the object to perform scale (stores mean/std) for inference, as well as the scaled x
-    """
-    x_nzrow = x.any(axis=1)
-    scaler = prep.StandardScaler().fit(x[x_nzrow, :])
-    x_scaled = np.copy(x)
-    x_scaled[x_nzrow, :] = scaler.transform(x_scaled[x_nzrow, :])
-    x_scaled[x_scaled > 1] = 1
-    x_scaled[x_scaled < -1] = -1
-    x_scaled[np.absolute(x_scaled) < 1e-5] = 0
-    return scaler, x_scaled
+    eval_preds = sigmoid(eval_preds)
+    eval_preds[exclude_index, exclude_items] = -(1 << 10)
 
+    # auc
+    auc_list, auc_weight = [], []
+    for row in range(eval_preds.shape[0]):
+        eval_p = eval_preds[row]
+        y_true = eval_data.R_test_inf[row, :].todense().A.flatten()
+        y_true = y_true[eval_p >= 0]
+        preds = eval_p[eval_p >= 0]
+        a = roc_auc_score(y_true, preds)
+        auc_list.append(a)
+        auc_weight.append(len(y_true))
+    auc_list = np.array(auc_list)
+    auc_weight = np.array(auc_weight)
+    ret = np.multiply(auc_list, auc_weight).sum() / auc_weight.sum()
+    if val:
+        return ret
 
-def standardize_3(x):
-    """
-    takes sparse input and compute standardized version
+    at_k = 10  # at_k
+    arg_eval_preds = np.argsort(-eval_preds)
+    hr_ndcg = list(map(lambda x: hr_ndcg_at_k(x, arg_eval_preds, at_k), metric))
+    hr_ndcg = np.array(hr_ndcg, dtype=np.float).mean(axis=0)
+    ret = np.hstack([ret, hr_ndcg])
 
-    Note:
-        cap at 2 std
-
-    :param x: 2D scipy sparse data array to standardize (column-wise), must support row indexing
-    :return: the object to perform scale (stores mean/std) for inference, as well as the scaled x
-    """
-    x_nzrow = x.any(axis=1)
-    scaler = prep.StandardScaler().fit(x[x_nzrow, :])
-    x_scaled = np.copy(x)
-    x_scaled[x_nzrow, :] = scaler.transform(x_scaled[x_nzrow, :])
-    x_scaled[x_scaled > 2] = 2
-    x_scaled[x_scaled < -2] = -2
-    x_scaled[np.absolute(x_scaled) < 1e-5] = 0
-    return scaler, x_scaled
+    return ret
 
 
 # prepare idcg
@@ -155,112 +157,32 @@ idcg_array = np.arange(rank) + 1
 idcg_array = 1 / np.log2(idcg_array + 1)
 
 
-def map_to_test(ndcg_group, eval_data):
+def hr_ndcg_at_k(sample, rating, at_k):
     """
-    param:
-        interaction: array(@n+1, 3)
-
-    return:
-        user - uid
-        pos_item - leave-one-out pos item
-        neg_items - left items except pos item
+    leave-one-out metric in cold start
+    input:
+        sample - (uid, one pos, k neg)
+        rating - rank k item index
     """
-    user = ndcg_group[:, 0]
-    target_user = user[0]
-    assert len(user[user == target_user]) == len(user)
-    user = eval_data.test_user_ids_map[target_user]
+    pos_item = sample[1]
+    neg_items = sample[2:]
+    # items rank before pos_item
+    sorted_items = rating[sample[0]]
+    end = sorted_items.tolist().index(pos_item)
+    x = np.zeros_like(sorted_items)
+    x[sorted_items[:end]] = 1
+    # interactions
+    y = np.zeros_like(sorted_items)
+    y[neg_items] = 1
+    # leave-one-out @k - how many neg-sample items rank before pos_item
+    z = np.multiply(y, x)
+    n_items_rank_before = np.sum(z)
+    # hr
+    hr = 0 if n_items_rank_before >= at_k else 1
+    # ndcg
+    ndcg = 0 if n_items_rank_before >= at_k else idcg_array[n_items_rank_before]
 
-    items = list(map(eval_data.test_item_ids_map.get, ndcg_group[:, 1]))
-    pos_item = items[0]
-    neg_items = items[1:]
-    return user, pos_item, neg_items
-
-
-def sigmoid(array):
-    return 1 / (1 + np.exp(-array))
-
-
-def batch_eval_auc(_sess, tf_eval, eval_feed_dict, eval_data, warm=False):
-    eval_preds = []
-    for (bh, (eval_start, eval_stop)) in enumerate(eval_data.eval_batch):
-        eval_preds_batch = _sess.run(tf_eval, feed_dict=eval_feed_dict(bh, eval_start, eval_stop, eval_data, warm))
-        eval_preds.append(eval_preds_batch)
-    eval_preds = np.concatenate(eval_preds)
-    tf.local_variables_initializer().run()  # 为啥这里要加这一句？
-
-    # auc
-    auc_list = []
-    for row in range(eval_preds.shape[0]):
-        y_true = eval_data.R_test_inf[row, :].todense().A.flatten()
-        preds = sigmoid(eval_preds[row])
-        fpr, tpr, thresholds = roc_curve(y_true, preds, pos_label=1)
-        a = auc(fpr, tpr)
-        auc_list.append(a)
-    return np.mean(auc_list)
-
-
-def batch_eval(_sess, tf_eval, eval_feed_dict, eval_data, metric, warm=False):
-    """
-    given EvalData and DropoutNet compute graph in TensorFlow, runs batch evaluation
-    param:
-        _sess: tf session
-        tf_eval: the evaluate output symbol in tf
-        eval_feed_dict: method to parse tf, pick from EvalData method
-        recall_k: list of thresholds to compute recall at (information retrieval recall)
-        eval_data: EvalData instance
-        recall array at thresholds matching recall_k
-    """
-
-    # 在测试集上得到预测结果 user-item
-    eval_preds, arg_eval_preds = [], []
-    for (bh, (eval_start, eval_stop)) in enumerate(eval_data.eval_batch):
-        eval_preds_batch = _sess.run(tf_eval, feed_dict=eval_feed_dict(bh, eval_start, eval_stop, eval_data, warm))
-        eval_preds.append(eval_preds_batch)
-        arg_eval_preds_batch = np.argsort(-eval_preds_batch)  # sort
-        arg_eval_preds.append(arg_eval_preds_batch)
-
-    eval_preds = np.concatenate(eval_preds)
-    arg_eval_preds = np.concatenate(arg_eval_preds)
-    tf.local_variables_initializer().run()  # 为啥这里要加这一句？
-    ret = []
-
-    # auc
-    auc_list = []
-    for row in range(eval_preds.shape[0]):
-        y_true = eval_data.R_test_inf[row, :].todense().A.flatten()
-        preds = sigmoid(eval_preds[row])
-        fpr, tpr, thresholds = roc_curve(y_true, preds, pos_label=1)
-        a = auc(fpr, tpr)
-        auc_list.append(a)
-    ret.append(np.mean(auc_list))
-
-    at_k = 10  # at_k
-    hr_k_list, ndcg_k_list = [], []
-    for ndcg_group in metric:  # metric (n_nei * n_user, @k+1, 3)
-        # mapped
-        user, pos_item, neg_items = map_to_test(ndcg_group, eval_data)
-        # prediction
-        preds_k = arg_eval_preds[user]
-        # items rank before pos_item
-        end = preds_k.tolist().index(pos_item)
-        x = np.zeros_like(preds_k)
-        x[preds_k[:end]] = 1
-        # interactions
-        y = np.zeros_like(preds_k)
-        y[neg_items] = 1
-        # leave-one-out @k - how many neg-sample items rank before pos_item
-        z = np.multiply(y, x)
-        n_items_rank_before = np.sum(z)
-        # hr
-        hr = 0 if n_items_rank_before >= at_k else 1
-        hr_k_list.append(hr)
-        # ndcg
-        ndcg = 0 if n_items_rank_before >= at_k else idcg_array[n_items_rank_before]
-        ndcg_k_list.append(ndcg)
-    ret.append(np.mean(hr_k_list))
-    ret.append(np.mean(ndcg_k_list))
-
-    return ret
+    return [hr, ndcg]
 
 
 def negative_sampling(pos_user_array, pos_item_array, neg, item_warm):
@@ -277,13 +199,45 @@ def negative_sampling(pos_user_array, pos_item_array, neg, item_warm):
         target: scores of both pos interactions and neg ones
     """
     user_pos = pos_user_array.reshape((-1))
-    # np.tile(seq, n): repeat seq for n times
     user_neg = np.tile(pos_user_array, neg).reshape((-1))
     item_pos = pos_item_array.reshape((-1))
-    # replace: whether element can be chosen more than once
-    # ？？为什么 neg item 是直接在 warm item 里面随机抽取，是因为 adj 足够稀疏吗
     item_neg = np.random.choice(item_warm, size=neg * pos_user_array.shape[0], replace=True).reshape((-1))
     target_pos = np.ones_like(item_pos)
     target_neg = np.zeros_like(item_neg)
     return np.concatenate((user_pos, user_neg)), np.concatenate((item_pos, item_neg)), np.concatenate(
         (target_pos, target_neg))
+
+
+def at_k_sampling(uni_users, support_dict, at_k, item_array, complement_dict=None):
+    """
+    leave-one-out metric.
+    param:
+        uni_users - unique users in training data
+
+    return:
+        (uid, pos_item, k_neg_items) * n_interactions
+    """
+    at_k_list = []
+    for uid in uni_users:
+        pos_neigh = support_dict[uid]  # pos sample
+
+        if complement_dict is not None:
+            pos_set = np.hstack([complement_dict[uid], pos_neigh])  # excluded item
+        else:
+            pos_set = pos_neigh
+
+        for n in pos_neigh:
+            at_k_samp = np.zeros(2 + at_k)
+            # a pos sample
+            at_k_samp[0] = uid
+            at_k_samp[1] = n
+            # n neg samples
+            neg_item = []
+            while len(neg_item) < at_k:
+                neg_item = np.random.choice(item_array, 2 * at_k)
+                neg_item = neg_item[[i not in pos_set for i in neg_item]]  # "i not in pos_set" returns a bool value.
+            neg_item = neg_item[:at_k]
+            at_k_samp[2:] = neg_item
+            at_k_list.append(at_k_samp)
+
+    return np.stack(at_k_list).astype(np.int)

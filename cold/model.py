@@ -3,7 +3,7 @@ import numpy as np
 
 
 def l2_norm(para):
-    return (1 / 2) * tf.reduce_sum(tf.square(para))  # 怎么没有乘 1/2
+    return (1 / 2) * tf.reduce_sum(tf.square(para))
 
 
 def dense_batch_fc_tanh(x, units, is_training, scope, do_norm=False):
@@ -177,22 +177,25 @@ class Heater:
             self.eval_preds_cold = tf.matmul(self.U_embedding, self.V_embedding, transpose_b=True, name='pred_cold')
             self.eval_preds_warm = tf.matmul(self.Uin, self.Vin, transpose_b=True, name='pred_warm')
 
-    def get_eval_dict(self, _i, _eval_start, _eval_finish, eval_data, warm):
+    def get_eval_dict(self, U_pref, V_pref, eval_data, U_content=None, V_content=None, warm=False):
+
         _eval_dict = {
-            self.Uin: eval_data.U_pref_test[_eval_start:_eval_finish, :],  # test batch users embedding
-            self.Vin: eval_data.V_pref_test,  # all test item embedding
+            self.Uin: U_pref,  # test batch users embedding
+            self.Vin: V_pref,  # all test item embedding
             self.is_training: False
         }
 
+        dropout_item_indicator = np.zeros((len(V_pref), 1))
         if self.phi_v_dim > 0:
-            dropout_item_indicator = np.ones((len(eval_data.test_item_ids), 1)) if not warm else np.zeros((len(eval_data.test_item_ids), 1))
+            if not warm:
+                dropout_item_indicator[eval_data.test_items] = 1
             _eval_dict[self.dropout_item_indicator] = dropout_item_indicator
-            _eval_dict[self.Vcontent] = eval_data.V_content_test
+            _eval_dict[self.Vcontent] = V_content
 
         if self.phi_u_dim > 0:
-            dropout_user_indicator = np.ones((_eval_finish - _eval_start, 1)) if not warm else np.zeros((_eval_finish - _eval_start, 1))
+            dropout_user_indicator = np.ones((len(U_pref), 1)) if not warm else np.zeros((len(U_pref), 1))
             _eval_dict[self.dropout_user_indicator] = dropout_user_indicator
-            _eval_dict[self.Ucontent] = eval_data.U_content_test[_eval_start:_eval_finish, :]
+            _eval_dict[self.Ucontent] = U_content
 
         return _eval_dict
 
