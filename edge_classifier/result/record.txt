@@ -1,0 +1,67 @@
+============ item item ======================
+baseline:
+					auc   	 acc
+best[57] warm test:	0.919237 0.858832
+best[57] cold test:	0.686202 0.612619
+
+abandon warm feature:
+					auc   	 acc
+best[41] warm test:	0.918990 0.856728
+best[41] cold test:	0.527812 0.594768
+
+split warm training item into cold and warm"  // 1000   neg_rate 2
+					auc   	 acc
+best[86] warm test:	0.824433 0.793737
+best[86] cold test:	0.741263 0.637960
+
+warm test is unimportant!!
+cold embedding is not prepared
+
+// 100   neg_rate 2
+					auc   	 acc
+best[37] warm test:	0.735495 0.781356
+best[37] cold test:	0.767734 0.623603
+
+// 1000 neg_rate 1
+					auc   	 acc
+best[117] warm test:	0.834642 0.749876
+best[117] cold test:	0.718492 0.523033
+
+// 1000 neg_rate 2  only warm embedding
+					auc   	 acc
+best[34] warm test:	0.880891 0.823885
+best[34] cold test:	0.573732 0.600598
+
+new  //100 neg_rate 3  split train into row and col  without warm feature
+					auc   	 acc
+best[1] test:	0.873390 0.825972
+
+neg_rate  4
+					auc   	 acc
+best[0] test:	0.876240 0.845367
+
+neg_rate  5
+					auc   	 acc
+best[0] test:	0.878442 0.865859
+
+with warm feature
+					auc   	 acc
+best[0] test:	0.829606 0.840014
+
+neg_rate 5 batch 2048
+					auc   	 acc
+best[1] test:	0.873314 0.864018
+
+not split train into row and col!
+neg_rate 2
+					auc   	 acc
+best[0] test:	0.889395 0.814210
+
+neg_rate 5 batch 2048
+					auc   	 acc
+best[0] test:	0.886917 0.870219
+
+============ item user ======================
+neg_rate 5 batch 1024
+					auc   	 acc
+best[38] test:	0.955024 0.918849
