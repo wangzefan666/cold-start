@@ -5,6 +5,7 @@ import tensorflow as tf
 import random
 from sklearn.metrics import roc_auc_score
 import os
+from tqdm import tqdm
 
 
 # =========== set seed ==============
@@ -86,9 +87,9 @@ def sigmoid(array):
 
 
 def batch_eval(_sess, tf_eval, eval_feed_dict, eval_data,
-               U_pref, V_pref, excluded_dict,
+               U_pref, V_pref, excluded_dict=None,
                U_content=None, V_content=None,
-               metric=None, warm=False, val=False):
+               metric=None, warm=False, val=False, ignore_cold_item=False):
     """
     given EvalData and DropoutNet compute graph in TensorFlow, runs batch evaluation
     param:
@@ -100,31 +101,34 @@ def batch_eval(_sess, tf_eval, eval_feed_dict, eval_data,
 
     # 在测试集上得到预测结果 user-item
     tf.local_variables_initializer().run()
-    V_content = V_content.todense() if V_content is not None else None
     eval_preds, arg_eval_preds = [], []
     for (start, end) in eval_data.eval_batch:
         batch_user = eval_data.test_users[start:end]
         batch_u_pref = U_pref[batch_user]
-        batch_u_cont = U_content[batch_user].todense() if U_content is not None else None
+        batch_u_cont = U_content[batch_user] if U_content is not None else None
         # scores
         eval_preds_batch = _sess.run(tf_eval, feed_dict=eval_feed_dict(batch_u_pref, V_pref, eval_data,
                                                                        batch_u_cont, V_content, warm))
         eval_preds.append(eval_preds_batch)
 
     eval_preds = np.concatenate(eval_preds)
-
-    # mask pos in train
-    exclude_index = []
-    exclude_items = []
-    for uid in eval_data.test_users:
-        iid_array = excluded_dict[uid]
-        uid = eval_data.test_user_ids_map[uid]
-        iid_array = np.setdiff1d(iid_array, np.array(eval_data.R_test_inf.rows[uid], dtype=np.int))
-        exclude_index.extend([uid] * len(iid_array))
-        exclude_items.extend(iid_array)
-
     eval_preds = sigmoid(eval_preds)
-    eval_preds[exclude_index, exclude_items] = -(1 << 10)
+
+    # mask pos in warm
+    if excluded_dict is not None:
+        exclude_index = []
+        exclude_items = []
+        for uid in eval_data.test_users:
+            iid_array = excluded_dict[uid]
+            uid = eval_data.test_user_ids_map[uid]
+            iid_array = np.setdiff1d(iid_array, np.array(eval_data.R_test_inf.rows[uid], dtype=np.int))
+            exclude_index.extend([uid] * len(iid_array))
+            exclude_items.extend(iid_array)
+        eval_preds[exclude_index, exclude_items] = -(1 << 10)
+
+    # 应付 XING 中 cold user 情况，此时不能有 cold item 出现
+    if ignore_cold_item:
+        eval_preds[:, eval_data.cold_items] = -(1 << 10)
 
     # auc
     auc_list, auc_weight = [], []
@@ -218,7 +222,7 @@ def at_k_sampling(uni_users, support_dict, at_k, item_array, complement_dict=Non
         (uid, pos_item, k_neg_items) * n_interactions
     """
     at_k_list = []
-    for uid in uni_users:
+    for uid in tqdm(uni_users):
         pos_neigh = support_dict[uid]  # pos sample
 
         if complement_dict is not None:

@@ -18,9 +18,10 @@ class EvalData:
             test_item_ids: test-item-ids from whole set
     """
 
-    def __init__(self, test_rec, test_items, test_users, n_items, batch_size):
+    def __init__(self, test_rec, test_items, test_users, cold_items, n_items, batch_size):
         # 需要所有 item 一起 rank，无论 cold 还是 warm，推荐系统不知道你是 cold 还是 warm
         self.test_items = test_items
+        self.cold_items = cold_items
         # test_user_id_set and id2index
         self.test_users = test_users
         self.test_user_ids_map = {uid: i for i, uid in enumerate(self.test_users)}

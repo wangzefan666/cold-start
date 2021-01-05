@@ -185,10 +185,9 @@ class Heater:
             self.is_training: False
         }
 
-        dropout_item_indicator = np.zeros((len(V_pref), 1))
         if self.phi_v_dim > 0:
-            if not warm:
-                dropout_item_indicator[eval_data.test_items] = 1
+            dropout_item_indicator = np.zeros((len(V_pref), 1))
+            dropout_item_indicator[eval_data.cold_items] = 1
             _eval_dict[self.dropout_item_indicator] = dropout_item_indicator
             _eval_dict[self.Vcontent] = V_content
 

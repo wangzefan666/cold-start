@@ -28,6 +28,7 @@ parser.add_argument('--reg', type=float, default=0.0001, help='regularization')
 parser.add_argument('--dim', type=int, default=5, help='number of experts')
 parser.add_argument('--eval_batch_size', type=int, default=5000)
 parser.add_argument('--gpu_id', type=int, default=0, help='0 for NAIS_prod, 1 for NAIS_concat')
+parser.add_argument('--epochs', type=int, default=100)
 
 args = parser.parse_args()
 pprint(vars(args))
@@ -54,6 +55,7 @@ def load_data(data_name):
     dat['item_num'] = warm_dict['item_num']
     dat['u_pref'] = pref[:dat['user_num']]
     dat['v_pref'] = pref[dat['user_num']:]
+    dat['cold_items'] = np.array(list(cold_dict['val_nb_reverse'].keys()) + list(cold_dict['test_nb_reverse'].keys()), dtype=np.int)
     timer.toc('Load U:%s, V:%s and standardize.' % (str(dat['u_pref'].shape), str(dat['v_pref'].shape))).tic()
 
     # load split, cold item, warm user
@@ -67,7 +69,7 @@ def load_data(data_name):
     recs = val_eval[['user', 'item']].values
     test_users = np.unique(recs[:, 0])
     test_items = np.unique(recs[:, 1])
-    dat['val_eval'] = data.EvalData(recs, test_items=test_items, test_users=test_users,
+    dat['val_eval'] = data.EvalData(recs, test_items=test_items, test_users=test_users, cold_items=dat['cold_items'],
                                     n_items=dat['item_num'], batch_size=args.eval_batch_size)
     timer.toc('read val triplets %s' % str(val_eval.shape)).tic()
 
@@ -75,7 +77,7 @@ def load_data(data_name):
     recs = cold_eval[['user', 'item']].values
     test_users = np.unique(recs[:, 0])
     test_items = np.unique(recs[:, 1])
-    dat['cold_eval'] = data.EvalData(recs, test_items=test_items, test_users=test_users,
+    dat['cold_eval'] = data.EvalData(recs, test_items=test_items, test_users=test_users, cold_items=dat['cold_items'],
                                      n_items=dat['item_num'], batch_size=args.eval_batch_size)
     timer.toc('read cold test triplets %s' % str(cold_eval.shape)).tic()
 
@@ -83,7 +85,7 @@ def load_data(data_name):
     recs = warm_eval[['user', 'item']].values
     test_users = np.unique(recs[:, 0])
     test_items = np.unique(recs[:, 1])
-    dat['warm_eval'] = data.EvalData(recs, test_items=test_items, test_users=test_users,
+    dat['warm_eval'] = data.EvalData(recs, test_items=test_items, test_users=test_users, cold_items=dat['cold_items'],
                                      n_items=dat['item_num'], batch_size=args.eval_batch_size)
     timer.toc('read warm test triplets %s' % str(warm_eval.shape)).tic()
 
@@ -121,7 +123,7 @@ model_select = args.model_select
 rank_out = args.rank  # output_dim
 data_batch_size = 1024  # train batch size
 dropout = args.dropout
-num_epoch = 100
+num_epoch = args.epochs
 neg = args.neg  # negative sampling rate
 _lr = args.lr
 _decay_lr_every = 10
@@ -130,7 +132,7 @@ _lr_decay = 0.8
 dat = load_data(data_name)
 u_pref = dat['u_pref']  # all user pre embedding
 v_pref = dat['v_pref']  # all item pre embedding
-item_content = dat['item_content']  # all item context matrix
+item_content = dat['item_content'].todense()  # all item context matrix
 test_eval = dat['cold_eval']  # EvalData
 val_eval = dat['val_eval']  # EvalData
 warm_test_eval = dat['warm_eval']  # EvalData
@@ -159,14 +161,14 @@ with tf.Session(config=config) as sess:
     timer.toc('initialized tf').tic()
 
     # original result
-    org_warm_test = utils.batch_eval(sess, heater.eval_preds_warm,
-                                     eval_feed_dict=heater.get_eval_dict,
-                                     eval_data=warm_test_eval,
-                                     U_pref=u_pref, V_pref=v_pref,
-                                     excluded_dict=dat['pos_nb'],
-                                     V_content=item_content,
-                                     metric=dat['metric']['warm_test'],
-                                     warm=True)
+    # org_warm_test = utils.batch_eval(sess, heater.eval_preds_warm,
+    #                                  eval_feed_dict=heater.get_eval_dict,
+    #                                  eval_data=warm_test_eval,
+    #                                  U_pref=u_pref, V_pref=v_pref,
+    #                                  excluded_dict=dat['pos_nb'],
+    #                                  V_content=item_content,
+    #                                  metric=dat['metric']['warm_test'],
+    #                                  )
 
     best_epoch = 0
     patience = 0
@@ -188,7 +190,7 @@ with tf.Session(config=config) as sess:
             batch_targets = target_array[batch_idx]
 
             # content
-            item_content_batch = item_content[batch_items, :].todense()
+            item_content_batch = item_content[batch_items, :]
             # dropout: used in randomized training
             # indicator's target is the CF pretrain rep
             # set the dropped rows' position in indicator to be 1
@@ -259,7 +261,7 @@ with tf.Session(config=config) as sess:
                                       excluded_dict=dat['pos_nb'],
                                       V_content=item_content,
                                       metric=dat['metric']['warm_test'],
-                                      warm=True)
+                                      )
     best_cold_test = utils.batch_eval(sess, heater.eval_preds_cold,
                                       eval_feed_dict=heater.get_eval_dict,
                                       eval_data=test_eval,
@@ -268,7 +270,7 @@ with tf.Session(config=config) as sess:
                                       V_content=item_content,
                                       metric=dat['metric']['cold_test'])
     print('\t\t\t\t\t' + '\t '.join([str(i).ljust(6) for i in ['auc', 'hr', 'ndcg']]))  # padding to fixed len
-    print('origin warm test:\t%s' % (' '.join(['%.6f' % i for i in org_warm_test])))
+    # print('origin warm test:\t%s' % (' '.join(['%.6f' % i for i in org_warm_test])))
     print('best[%d] warm test:\t%s' % (best_epoch, ' '.join(['%.6f' % i for i in best_warm_test])))
     print('best[%d] cold test:\t%s' % (best_epoch, ' '.join(['%.6f' % i for i in best_cold_test])))
 
