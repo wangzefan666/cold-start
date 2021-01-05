@@ -24,6 +24,7 @@ t0 = time.time()
 """read data from file"""
 df_val = pd.read_csv(args.data_dir + args.dataset + f'/cold_{args.cold_object}_val.csv', dtype=np.int)
 df_test = pd.read_csv(args.data_dir + args.dataset + f'/cold_{args.cold_object}_test.csv', dtype=np.int)
+df_pos = pd.concat([df_val, df_test])
 info_dict = pickle.load(open(args.data_dir + args.dataset + '/info.pkl', 'rb'))
 user_num = info_dict['user_num']
 item_num = info_dict['item_num']
@@ -32,9 +33,11 @@ item_num = info_dict['item_num']
 """Generate users' neighboring items."""
 val_nb = utils.df_get_neighbors(df_val)
 test_nb = utils.df_get_neighbors(df_test)
+pos_nb = utils.df_get_neighbors(df_pos)
 
 val_nb_reverse = utils.df_get_neighbors(df_val, 'item')
 test_nb_reverse = utils.df_get_neighbors(df_test, 'item')
+pos_nb_reverse = utils.df_get_neighbors(df_pos, 'item')
 
 
 """Save results"""
@@ -43,8 +46,10 @@ para_dict['user_num'] = info_dict['user_num']
 para_dict['item_num'] = info_dict['item_num']
 para_dict['val_nb'] = val_nb
 para_dict['test_nb'] = test_nb
+para_dict['pos_nb'] = pos_nb
 para_dict['val_nb_reverse'] = val_nb_reverse
 para_dict['test_nb_reverse'] = test_nb_reverse
+para_dict['pos_nb_reverse'] = pos_nb_reverse
 
 
 pickle.dump(para_dict, open(args.data_dir + args.dataset + f'/cold_{args.cold_object}_dict.pkl', 'wb'), protocol=4)
