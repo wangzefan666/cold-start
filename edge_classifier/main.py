@@ -16,34 +16,40 @@ parser.add_argument('--datadir', type=str, default='../data/process/')
 parser.add_argument('--warm_model', type=str, default='grmf', choices=['grmf', 'bprmf', 'meta2vec', 'lgn'])
 parser.add_argument('--neg_rate', type=int, default=5, help='negative sampling rate')
 parser.add_argument('--lr', type=float, default=0.001, help='starting learning rate')
-parser.add_argument('--n_hop', type=int, default=2)
+parser.add_argument('--n_hop', type=int, default=1)
 parser.add_argument('--train_batch', type=int, default=1024)
-parser.add_argument('--eval_batch_size', type=int, default=5000)
+parser.add_argument('--eval_batch_size', type=int, default=50000)
 parser.add_argument('--epochs', type=int, default=1000)
 parser.add_argument('--cold_object', type=str, default='item')
 parser.add_argument('--n_layers', type=int, default=3)
 parser.add_argument('--hid_dim', type=int, default=256)
+parser.add_argument('--type', type=int, default=0, help="0:only embedding  1:only feature  2:both")
+parser.add_argument('--dropout', type=float, default=0.5)
+parser.add_argument('--gpu_id', type=int, default=3)
 
 args = parser.parse_args()
 pprint(vars(args))
 
 timer = utils.timer(name='main').tic()
-
+os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
 data_path = args.datadir + args.data
 # *******************************
 # 使用 warm feature 后结果明显下降
-has_warm_feature = False
+# has_warm_feature = False
 # *******************************
 data = data.load_data(args)
-cold_features = data['cold_features'].todense().A
 warm_embeddings = data['warm_embeddings']
+cold_features = data['cold_features']
+warm_features = data['warm_features']
 timer.toc('loaded data')
 
-
 # build model
-classifier = model.Edge_classifier(feature_dim=cold_features.shape[-1], embed_dim=warm_embeddings.shape[-1],
-                                   has_warm_feature=has_warm_feature, lr=args.lr,
-                                   n_layers=args.n_layers, hid_dim=args.hid_dim)
+classifier = model.Edge_classifier(cold_feature_dim=cold_features.shape[-1],
+                                   warm_feature_dim=warm_features.shape[-1],
+                                   embed_dim=warm_embeddings.shape[-1],
+                                   type=args.type, lr=args.lr,
+                                   n_layers=args.n_layers, hid_dim=args.hid_dim,
+                                   dropout=args.dropout)
 classifier.build_model()
 
 saver = tf.train.Saver()
@@ -60,8 +66,8 @@ with tf.Session(config=config) as sess:
     best_epoch = 0
     patience = 0
     val_auc, best_val_auc = 0., 0.
+    train_array = data['train']
     for epoch in range(args.epochs):
-        train_array = data['train']
         random_idx = np.random.permutation(train_array.shape[0])  # 生成一个打乱的 range 序列作为下标
         data_batch = [(n, min(n + args.train_batch, len(random_idx))) for n in
                       range(0, len(random_idx), args.train_batch)]
@@ -78,7 +84,7 @@ with tf.Session(config=config) as sess:
             # run
             batch_root_features = cold_features[batch_root_index, :]
             batch_warm_embeddings = warm_embeddings[batch_nei_index, :]
-            batch_warm_features = cold_features[batch_nei_index, :]
+            batch_warm_features = warm_features[batch_nei_index, :]
 
             _, _, loss, pred_loss, reg_loss = sess.run(
                 [classifier.preds, classifier.optimizer, classifier.loss, classifier.pred_loss, classifier.reg_loss],
@@ -105,11 +111,13 @@ with tf.Session(config=config) as sess:
                                       metric=data['val'],
                                       cold_features=cold_features,
                                       warm_embeddings=warm_embeddings,
-                                      has_warm_feature=has_warm_feature)
+                                      warm_features=warm_features,
+                                      batch_size=args.eval_batch_size,
+                                      )
         # if get a better eval result on val, update test result
         # best_recall and best_test_recall are global variables while others are local ones
         if val_auc > best_val_auc:
-            saver.save(sess, save_path + args.data + args.warm_model + str(args.n_hop))
+            saver.save(sess, save_path + args.data + f'_{args.warm_model}_{args.cold_object}_{str(args.n_hop)}_{str(args.type)}')
             patience = 0
             best_val_auc = val_auc
             best_epoch = epoch
@@ -122,13 +130,16 @@ with tf.Session(config=config) as sess:
             print(f"Early stop at epoch {epoch}")
             break
 
-    saver.restore(sess, save_path + args.data + args.warm_model + str(args.n_hop))
+    # Test
+    saver.restore(sess, save_path + args.data + f'_{args.warm_model}_{args.cold_object}_{str(args.n_hop)}_{str(args.type)}')
     warm_test = utils.batch_eval(sess, classifier.preds,
                                  eval_feed_dict=classifier.get_eval_dict,
                                  metric=data['test'],
                                  cold_features=cold_features,
                                  warm_embeddings=warm_embeddings,
-                                 has_warm_feature=has_warm_feature)
+                                 warm_features=warm_features,
+                                 batch_size=args.eval_batch_size,
+                                 )
     timer.toc('[Test]').tic()
     print('\t\t\t\t\t' + '\t '.join([str(i).ljust(6) for i in ['auc', 'acc']]))  # padding to fixed len
     print('best[%d] test:\t%s' % (best_epoch, ' '.join(['%.6f' % i for i in warm_test])))

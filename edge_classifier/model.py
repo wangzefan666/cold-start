@@ -6,7 +6,7 @@ def l2_norm(para):
     return (1 / 2) * tf.reduce_sum(tf.square(para))
 
 
-def MLP_layer(x, units, is_training, scope, is_first=False, is_output=False):
+def MLP_layer(x, units, is_training, scope, dropout=0.5, is_first=False, is_output=False):
     with tf.variable_scope(scope):
         init = tf.contrib.layers.xavier_initializer(uniform=True)
         if is_first:
@@ -21,18 +21,20 @@ def MLP_layer(x, units, is_training, scope, is_first=False, is_output=False):
         else:
             h2 = tf.layers.batch_normalization(h1, momentum=0.9, training=is_training)
             h3 = tf.nn.leaky_relu(h2, alpha=0.01)
-            h4 = tf.layers.dropout(h3, rate=0.5, training=is_training)
+            h4 = tf.layers.dropout(h3, rate=dropout, training=is_training)
             return h4, l2_norm(h1_w) + l2_norm(h1_b)
 
 
 class Edge_classifier:
-    def __init__(self, feature_dim, embed_dim, has_warm_feature, lr, n_layers, hid_dim):
+    def __init__(self, cold_feature_dim, warm_feature_dim, embed_dim, type, lr, n_layers, hid_dim, dropout):
 
-        self.feature_dim = feature_dim  # input embedding dimension
+        self.cold_feature_dim = cold_feature_dim
+        self.warm_feature_dim = warm_feature_dim  # input embedding dimension
         self.embed_dim = embed_dim  # user content dimension
-        self.has_warm_feature = has_warm_feature
+        self.type = type
         self.n_layers = n_layers
         self.hid_dim = hid_dim
+        self.dropout = dropout
 
         self.reg_loss = 0.
         self.reg = 1e-4
@@ -41,27 +43,32 @@ class Edge_classifier:
     def build_model(self):
         self.is_training = tf.placeholder(tf.bool, name='is_training')
         self.target = tf.placeholder(tf.float32, shape=[None], name='target')
+        self.root_feature = tf.placeholder(tf.float32, shape=[None, self.cold_feature_dim], name='root_feature')
 
-        self.root_feature = tf.placeholder(tf.float32, shape=[None, self.feature_dim], name='root_feature')
-        self.warm_embedding = tf.placeholder(tf.float32, shape=[None, self.embed_dim], name='warm_embedding')
-        if self.has_warm_feature:
-            self.warm_feature = tf.placeholder(tf.float32, shape=[None, self.feature_dim], name='warm_feature')
-            self.MLP_output = tf.concat([self.root_feature, self.warm_embedding, self.warm_feature], axis=-1)
-        else:
+        if self.type == 0:
+            self.warm_embedding = tf.placeholder(tf.float32, shape=[None, self.embed_dim], name='warm_embedding')
             self.MLP_output = tf.concat([self.root_feature, self.warm_embedding], axis=-1)
+        elif self.type == 1:
+            self.warm_feature = tf.placeholder(tf.float32, shape=[None, self.warm_feature_dim], name='warm_feature')
+            self.MLP_output = tf.concat([self.root_feature, self.warm_feature], axis=-1)
+        elif self.type == 2:
+            self.warm_embedding = tf.placeholder(tf.float32, shape=[None, self.embed_dim], name='warm_embedding')
+            self.warm_feature = tf.placeholder(tf.float32, shape=[None, self.warm_feature_dim], name='warm_feature')
+            self.MLP_output = tf.concat([self.root_feature, self.warm_embedding, self.warm_feature], axis=-1)
 
         # =========== MLP =================
-        for i in range(self.n_layers - 1):
-            self.MLP_output, h_reg = MLP_layer(
-                self.MLP_output, self.hid_dim, self.is_training, 'MLP_%d' % (i + 1), is_first=not bool(i))
-            self.reg_loss += h_reg
         if self.n_layers <= 1:
             self.MLP_output, h_reg = MLP_layer(
                 self.MLP_output, 1, self.is_training, 'MLP_%d' % self.n_layers, is_first=True, is_output=True)
+            self.reg_loss += h_reg
         else:
+            for i in range(self.n_layers - 1):
+                self.MLP_output, h_reg = MLP_layer(
+                    self.MLP_output, self.hid_dim, self.is_training, 'MLP_%d' % (i + 1), self.dropout, is_first=not bool(i))
+                self.reg_loss += h_reg
             self.MLP_output, h_reg = MLP_layer(
                 self.MLP_output, 1, self.is_training, 'MLP_%d' % self.n_layers, is_output=True)
-        self.reg_loss += h_reg
+            self.reg_loss += h_reg
 
         # loss
         with tf.variable_scope("loss"):
@@ -81,23 +88,32 @@ class Edge_classifier:
     def get_eval_dict(self, root_feature, warm_embedding, warm_feature=None):
         _eval_dict = {
             self.root_feature: root_feature,  # test batch users embedding
-            self.warm_embedding: warm_embedding,  # all test item embedding
             self.is_training: False
         }
 
-        if self.has_warm_feature:
+        if self.type == 0:
+            _eval_dict[self.warm_embedding] = warm_embedding
+        elif self.type == 1:
+            _eval_dict[self.warm_feature] = warm_feature
+        elif self.type == 2:
+            _eval_dict[self.warm_embedding] = warm_embedding
             _eval_dict[self.warm_feature] = warm_feature
         return _eval_dict
 
     def get_train_dict(self, root_feature, warm_embedding, target, warm_feature=None):
         _train_dict = {
             self.root_feature: root_feature,
-            self.warm_embedding: warm_embedding,
             self.target: target,
             self.is_training: True,
         }
 
-        if self.has_warm_feature:
+        if self.type == 0:
+            _train_dict[self.warm_embedding] = warm_embedding
+        elif self.type == 1:
             _train_dict[self.warm_feature] = warm_feature
+        elif self.type == 2:
+            _train_dict[self.warm_embedding] = warm_embedding
+            _train_dict[self.warm_feature] = warm_feature
+
         return _train_dict
 

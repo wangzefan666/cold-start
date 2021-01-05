@@ -6,6 +6,7 @@ import time
 import random
 import os
 from sklearn.metrics import roc_auc_score, accuracy_score
+from tqdm import tqdm
 
 
 # =========== set seed ==============
@@ -14,6 +15,7 @@ def set_seed(seed):
     np.random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
     tf.set_random_seed(seed)
+
 
 set_seed(42)
 
@@ -32,7 +34,7 @@ def label_neg_samp(uni_users, support_dict, item_array, neg_rate, pos_dict=None,
         ret_array - [n_samples, [uid, iid, label]] or [n_samples, [uid, pos, neg]]
     """
     ret_array = []
-    for uid in uni_users:
+    for uid in tqdm(uni_users):
         # pos sampling
         pos_neigh = support_dict[uid]
         pos_num = len(pos_neigh)
@@ -41,11 +43,13 @@ def label_neg_samp(uni_users, support_dict, item_array, neg_rate, pos_dict=None,
             pos_set = np.hstack([pos_dict[uid], pos_neigh])
         else:
             pos_set = pos_neigh
-        neg_item = []
+        # neg_item = []
         neg_num = pos_num * neg_rate
-        while len(neg_item) < neg_num:
-            neg_item = np.random.choice(item_array, 2 * neg_num)
-            neg_item = neg_item[[i not in pos_set for i in neg_item]]  # "i not in pos_set" returns a bool value.
+        neg_item = np.random.choice(np.setdiff1d(item_array, pos_set), neg_num)
+        # ============= changed ========================
+        # while len(neg_item) < neg_num:
+        #     neg_item = np.random.choice(item_array, 2 * neg_num)
+        #     neg_item = neg_item[[i not in pos_set for i in neg_item]]  # "i not in pos_set" returns a bool value.
 
         if not bpr:
             ret_arr = np.zeros((pos_num * (neg_rate + 1), 3)).astype(np.int)
@@ -69,7 +73,7 @@ def sigmoid(array):
 
 
 def batch_eval(_sess, tf_eval, eval_feed_dict, metric,
-               cold_features, warm_embeddings, has_warm_feature=False):
+               cold_features, warm_embeddings, warm_features, batch_size=5000):
     """
     given EvalData and DropoutNet compute graph in TensorFlow, runs batch evaluation
     param:
@@ -78,17 +82,26 @@ def batch_eval(_sess, tf_eval, eval_feed_dict, metric,
         eval_feed_dict: method to parse tf, pick from EvalData method
         eval_data: EvalData instance
     """
-
-    # 在测试集上得到预测结果 user-item
     tf.local_variables_initializer().run()
     root_nodes = metric[:, 0]
     warm_nodes = metric[:, 1]
-    eval_root_features = cold_features[root_nodes, :]
-    eval_warm_embeddings = warm_embeddings[warm_nodes, :]
-    eval_warm_features = cold_features[warm_nodes, :] if has_warm_feature else None
-    eval_preds = _sess.run(tf_eval, feed_dict=eval_feed_dict(root_feature=eval_root_features,
-                                                             warm_embedding=eval_warm_embeddings,
-                                                             warm_feature=eval_warm_features))
+
+    # batch eval
+    batch_split = [(n, min(n + batch_size, len(metric))) for n in range(0, len(metric), batch_size)]
+    eval_preds = []
+    for (start, end) in batch_split:
+        batch_root_nodes = root_nodes[start:end]
+        batch_warm_nodes = warm_nodes[start:end]
+        batch_root_features = cold_features[batch_root_nodes, :]
+        batch_warm_embeddings = warm_embeddings[batch_warm_nodes, :]
+        batch_warm_features = warm_features[batch_warm_nodes, :]
+        batch_eval_preds = _sess.run(tf_eval, feed_dict=eval_feed_dict(root_feature=batch_root_features,
+                                                                       warm_embedding=batch_warm_embeddings,
+                                                                       warm_feature=batch_warm_features))
+        eval_preds.append(batch_eval_preds)
+    eval_preds = np.hstack(eval_preds)
+
+    # metric
     y_true = metric[:, 2]
     eval_preds = sigmoid(eval_preds)
     auc = roc_auc_score(y_true, eval_preds)
