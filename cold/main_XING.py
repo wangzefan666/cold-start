@@ -70,9 +70,7 @@ def load_data(data_name):
         dat['u_pref'] = pref[:dat['user_num']]
         dat['v_pref'] = pref[dat['user_num']:]
         dat['warm_items'] = np.array(list(warm_dict['emb_nb_reverse'].keys()), dtype=np.int)
-        dat['warm_users'] = np.array(list(warm_dict['emb_nb'].keys()), dtype=np.int)
         dat['cold_items'] = np.setdiff1d(np.arange(dat['item_num']), dat['warm_items'])
-        dat['cold_users'] = np.setdiff1d(np.arange(dat['user_num']), dat['warm_users'])
         timer.toc('Load U:%s, V:%s and standardize.' % (str(dat['u_pref'].shape), str(dat['v_pref'].shape))).tic()
 
         # load split, cold item, warm user
@@ -171,13 +169,13 @@ val_eval = dat['val_eval']  # [both, item, user]
 warm_test_eval = dat['warm_eval']
 user_list = dat['user_list']
 item_list = dat['item_list']
-item_warm = np.unique(item_list)
+item_warm = dat['warm_items']
 
 timer = utils.timer(name='main').tic()
 # build model
-heater = model.Heater(latent_rank_in=u_pref.shape[1],
-                      user_content_rank=user_content.shape[1],
-                      item_content_rank=item_content.shape[1],
+heater = model.Heater(latent_rank_in=u_pref.shape[-1],
+                      user_content_rank=user_content.shape[-1],
+                      item_content_rank=item_content.shape[-1],
                       model_select=model_select, rank_out=rank_out,
                       reg=args.reg, alpha=args.alpha, dim=args.dim)
 heater.build_model()
@@ -203,8 +201,6 @@ with tf.Session(config=config) as sess:
     best_epoch = [0] * 3
     patience = [0] * 3
     best_val_auc = [0.] * 3
-    best_warm_test = [np.zeros(3)] * 3
-    best_cold_test = [np.zeros(3)] * 3
     for epoch in range(num_epoch):
         user_array, item_array, target_array = utils.negative_sampling(user_list, item_list, neg, item_warm)
         random_idx = np.random.permutation(user_array.shape[0])
