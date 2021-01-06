@@ -14,7 +14,6 @@ seed = 0
 set_seed(seed)
 
 parser = argparse.ArgumentParser(description="main_XING")
-
 parser.add_argument('--data', type=str, default='XING', help='path to eval in the downloaded folder')
 parser.add_argument('--datadir', type=str, default='../data/process/')
 parser.add_argument('--warm_model', type=str, default='lgn', choices=['grmf', 'bprmf', 'meta2vec', 'lgn'])
